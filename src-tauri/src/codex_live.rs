@@ -58,8 +58,10 @@ impl Projection {
         if kind != "active" && kind != "idle" {
             return;
         }
-        s.waiting_since = 0;
-        s.waiting_reason.clear();
+        if !s.codex_question_pending {
+            s.waiting_since = 0;
+            s.waiting_reason.clear();
+        }
         s.pending_since = 0;
         s.pending_tool.clear();
         s.pending_detail.clear();
@@ -79,7 +81,7 @@ impl Projection {
             } else {
                 ""
             };
-            if !reason.is_empty() {
+            if !reason.is_empty() && !s.codex_question_pending {
                 s.waiting_since = self.changed_ms;
                 s.waiting_reason = reason.into();
             }
@@ -498,6 +500,28 @@ mod tests {
             Some("task".into())
         );
         assert!(b.tasks.is_empty());
+    }
+
+    #[test]
+    fn async_question_survives_live_working_idle_and_blocking_flags() {
+        for status in [
+            json!({"type":"active", "activeFlags":[]}),
+            json!({"type":"active", "activeFlags":["waitingOnApproval"]}),
+            json!({"type":"active", "activeFlags":["waitingOnUserInput"]}),
+            json!({"type":"idle"}),
+        ] {
+            let mut b = fixture();
+            b.receive(&snapshot(status), 2000);
+            let mut s = Session {
+                codex_question_pending: true,
+                waiting_since: 1000,
+                waiting_reason: "Which folder?".into(),
+                ..Default::default()
+            };
+            b.tasks["task"].decorate(&mut s);
+            assert_eq!(s.waiting_since, 1000);
+            assert_eq!(s.waiting_reason, "Which folder?");
+        }
     }
     #[test]
     fn wrong_host_version_and_owner_are_not_authoritative() {

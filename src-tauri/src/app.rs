@@ -169,6 +169,12 @@ fn get_sessions() -> Vec<Session> {
     current_sessions()
 }
 
+#[tauri::command]
+fn dismiss_codex_questions(session_id: String) -> Result<Vec<Session>, String> {
+    crate::codex::dismiss_questions(&session_id)?;
+    Ok(current_sessions())
+}
+
 /// Everything the overlay shows, with each session's desktop chat attached.
 ///
 /// The hooks cannot supply the title: they run inside the session and know
@@ -1666,6 +1672,7 @@ pub fn run() {
         .manage(TrayToggles::default())
         .invoke_handler(tauri::generate_handler![
             get_sessions,
+            dismiss_codex_questions,
             connection_status,
             get_config,
             set_config,

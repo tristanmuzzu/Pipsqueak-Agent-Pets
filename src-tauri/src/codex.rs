@@ -46,6 +46,14 @@ struct Watch {
     speech_ms: u64,
     calls: HashSet<String>,
     waiting_call: String,
+    questions: Vec<Question>,
+}
+
+struct Question {
+    call_id: String,
+    index: usize,
+    since: u64,
+    title: String,
 }
 
 #[derive(Default)]
@@ -54,11 +62,25 @@ struct Tracker {
     scanned: Option<Instant>,
     titles: HashMap<String, String>,
     index_stamp: Option<(SystemTime, u64)>,
+    dismissed_questions: HashMap<String, HashSet<String>>,
 }
 
 fn cache() -> &'static Mutex<Tracker> {
     static CACHE: OnceLock<Mutex<Tracker>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(Tracker::default()))
+    CACHE.get_or_init(|| Mutex::new(Tracker::load(&dismissals_path())))
+}
+
+fn dismissals_path() -> PathBuf {
+    state::root().join("codex-dismissed-questions.json")
+}
+
+/// Dismiss only Pipsqueak's reminders; Codex's questions remain answerable.
+pub fn dismiss_questions(session_id: &str) -> Result<(), String> {
+    cache()
+        .lock()
+        .map_err(|_| "Question tracker is unavailable".to_string())?
+        .dismiss_questions(session_id, &dismissals_path())
+        .map_err(|err| format!("Could not save question dismissal: {err}"))
 }
 
 pub fn sessions(mode: Mode) -> Vec<Session> {
@@ -90,6 +112,42 @@ pub fn snapshot(mode: Mode) -> Vec<Session> {
 }
 
 impl Tracker {
+    fn load(path: &Path) -> Self {
+        Self {
+            dismissed_questions: fs::read(path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or_default(),
+            ..Self::default()
+        }
+    }
+
+    fn dismiss_questions(&mut self, session_id: &str, path: &Path) -> std::io::Result<()> {
+        let calls: HashSet<_> = self
+            .watches
+            .values()
+            .filter(|watch| watch.session.session_id == session_id)
+            .flat_map(|watch| watch.questions.iter().map(|q| q.call_id.clone()))
+            .collect();
+        if calls.is_empty() {
+            return Ok(());
+        }
+        let mut dismissed = self.dismissed_questions.clone();
+        dismissed
+            .entry(session_id.to_string())
+            .or_default()
+            .extend(calls);
+        // Commit before changing the display so a failed save is retryable.
+        state::write_atomic(path, &serde_json::to_vec(&dismissed)?)?;
+        self.dismissed_questions = dismissed;
+        for watch in self.watches.values_mut() {
+            if watch.session.session_id == session_id {
+                watch.questions.clear();
+            }
+        }
+        Ok(())
+    }
+
     fn read(&mut self, root: &Path, now: u64, mode: Mode) -> Vec<Session> {
         if self.scanned.map_or(true, |at| at.elapsed() >= RESCAN) {
             let mut paths = Vec::new();
@@ -109,10 +167,36 @@ impl Tracker {
             self.read_titles(&root.join("session_index.jsonl"));
             self.scanned = Some(Instant::now());
         }
-        let mut sessions = Vec::new();
+        // Resuming a desktop task can create another rollout with the same
+        // session ID. The newer incarnation owns its state; publishing both
+        // lets an old interruption outrank a later successful turn in the UI.
+        // Select before checking readiness so replay cannot resurrect the old
+        // outcome while the replacement is still catching up.
+        let mut current: HashMap<&str, (&PathBuf, &Watch)> = HashMap::new();
         for (path, watch) in &mut self.watches {
             // An archived rollout moves out of sessions/, so it disappears.
-            if watch.follow(path).is_err() || !watch.ready || !watch.accepted {
+            if watch.follow(path).is_err() || !watch.accepted {
+                continue;
+            }
+            if let Some(calls) = self.dismissed_questions.get(&watch.session.session_id) {
+                watch.questions.retain(|q| !calls.contains(&q.call_id));
+            }
+            let entry = current
+                .entry(&watch.session.session_id)
+                .or_insert((path, watch));
+            if (watch.session.started_ms, watch.session.updated_ms, path)
+                > (
+                    entry.1.session.started_ms,
+                    entry.1.session.updated_ms,
+                    entry.0,
+                )
+            {
+                *entry = (path, watch);
+            }
+        }
+        let mut sessions = Vec::new();
+        for (_, watch) in current.into_values() {
+            if !watch.ready {
                 continue;
             }
             let mut s = watch.snapshot(now, mode);
@@ -444,6 +528,7 @@ impl Watch {
                     .unwrap_or_else(|| "Turn failed".into());
             }
             "user_message" => {
+                self.answer_questions(&string(p, "message"));
                 self.session.headline =
                     summary_within(&string(p, "message"), 110).unwrap_or_default();
                 self.progress(at);
@@ -492,6 +577,9 @@ impl Watch {
 
     fn response(&mut self, p: &Value, at: u64) {
         match p["type"].as_str() {
+            Some("message") if p["role"] == "user" => {
+                self.answer_questions(&content(&p["content"]));
+            }
             Some("message") if p["role"] == "assistant" => {
                 let text = content(&p["content"]);
                 self.say(&text, at, false);
@@ -531,10 +619,41 @@ impl Watch {
                         .as_str()
                         .and_then(|s| summary_within(s, 180))
                         .unwrap_or_else(|| "Codex has a question for you".into());
+                } else if name.ends_with("request_user_input_async") && !id.is_empty() {
+                    let args = p["arguments"]
+                        .as_str()
+                        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                        .unwrap_or(Value::Null);
+                    if let Some(questions) = args["questions"].as_array() {
+                        for (index, question) in questions.iter().enumerate() {
+                            self.questions.push(Question {
+                                call_id: id.clone(),
+                                index,
+                                since: at,
+                                title: question["title"]
+                                    .as_str()
+                                    .and_then(|s| summary_within(s, 180))
+                                    .unwrap_or_else(|| "Codex has a question for you".into()),
+                            });
+                        }
+                    }
                 }
                 self.progress(at);
             }
             Some("function_call_output" | "custom_tool_call_output") => {
+                // Async output acknowledges delivery, not a human answer.
+                // Only a failed request can retire its questions here.
+                if self.questions.iter().any(|q| p["call_id"] == q.call_id) {
+                    let output = p["output"]
+                        .as_str()
+                        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                        .unwrap_or_else(|| p["output"].clone());
+                    if output["accepted"] == false
+                        || output.get("error").is_some_and(|e| !e.is_null())
+                    {
+                        self.questions.retain(|q| p["call_id"] != q.call_id);
+                    }
+                }
                 if !self.session.is_running() {
                     return;
                 }
@@ -549,8 +668,55 @@ impl Watch {
         }
     }
 
+    fn answer_questions(&mut self, text: &str) {
+        // A chat reply acknowledges existing reminders even if the question
+        // form stays unanswered in Codex. Structured answers remain selective.
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        if !text.starts_with("<send_user_message_question_reply>") {
+            self.questions.clear();
+            return;
+        }
+        let Some(body) = text
+            .strip_prefix("<send_user_message_question_reply>")
+            .and_then(|s| s.strip_suffix("</send_user_message_question_reply>"))
+        else {
+            return;
+        };
+        let Ok(replies) = serde_json::from_str::<Value>(body) else {
+            return;
+        };
+        let replies = replies
+            .as_array()
+            .map_or_else(|| vec![&replies], |a| a.iter().collect());
+        for reply in replies {
+            if !reply["answer"].is_string() {
+                continue;
+            }
+            let Some(id) = reply["questionItemId"]
+                .as_str()
+                .and_then(|s| serde_json::from_str::<Value>(s).ok())
+            else {
+                continue;
+            };
+            if id[0] == "request_user_input_async" {
+                self.questions
+                    .retain(|q| id[1] != q.call_id || id[2].as_u64() != Some(q.index as u64));
+            }
+        }
+    }
+
     fn snapshot(&self, now: u64, mode: Mode) -> Session {
         let mut s = self.session.clone();
+        // Questions outlive tool progress and turn boundaries. Project them
+        // last, independently of blocking approvals and completion state.
+        if let Some(question) = self.questions.first() {
+            s.codex_question_pending = true;
+            s.waiting_since = question.since;
+            s.waiting_reason = question.title.clone();
+        }
         s.narration = match mode {
             Mode::Off => String::new(),
             Mode::Thoughts
@@ -615,8 +781,13 @@ mod tests {
     const AT: u64 = 1788770600000;
 
     fn record(kind: &str, payload: Value) -> Vec<u8> {
+        record_at(AT, kind, payload)
+    }
+
+    fn record_at(at: u64, kind: &str, payload: Value) -> Vec<u8> {
         let mut bytes = serde_json::to_vec(&json!({
-            "timestamp": "2026-09-07T08:43:20Z", "type": kind, "payload": payload
+            "timestamp": chrono::DateTime::from_timestamp_millis(at as i64).unwrap().to_rfc3339(),
+            "type": kind, "payload": payload
         }))
         .unwrap();
         bytes.push(b'\n');
@@ -729,6 +900,278 @@ mod tests {
             json!({"type": "function_call_output", "call_id": "q"}),
         ));
         assert_eq!(w.session.waiting_since, 0);
+    }
+
+    fn ask_async(w: &mut Watch, call: &str, titles: &[&str]) {
+        w.feed(&record(
+            "response_item",
+            json!({
+                "type": "function_call", "name": "functions.request_user_input_async",
+                "call_id": call, "arguments": json!({"questions": titles.iter()
+                    .map(|title| json!({"title": title})).collect::<Vec<_>>()}).to_string()
+            }),
+        ));
+    }
+
+    fn async_reply(call: &str, index: usize) -> String {
+        format!(
+            "<send_user_message_question_reply>\n{}\n</send_user_message_question_reply>",
+            json!([{"questionItemId": json!(["request_user_input_async", call, index]).to_string(),
+                "question": "A question", "answer": "Selected option"}])
+        )
+    }
+
+    #[test]
+    fn async_questions_survive_acknowledgement_progress_and_turn_boundaries() {
+        let mut w = watch();
+        ask_async(&mut w, "q", &["Which folder?"]);
+        let events = [
+            (
+                "response_item",
+                json!({"type":"function_call_output", "call_id":"q", "output":"{\"accepted\":true}"}),
+            ),
+            (
+                "response_item",
+                json!({"type":"function_call", "name":"exec_command", "call_id":"work"}),
+            ),
+            (
+                "response_item",
+                json!({"type":"function_call_output", "call_id":"work", "output":"done"}),
+            ),
+            (
+                "event_msg",
+                json!({"type":"agent_message", "message":"Continuing independent work."}),
+            ),
+            (
+                "event_msg",
+                json!({"type":"task_complete", "turn_id":"turn-1"}),
+            ),
+            (
+                "event_msg",
+                json!({"type":"task_started", "turn_id":"turn-2"}),
+            ),
+        ];
+        for (kind, payload) in events {
+            w.feed(&record(kind, payload));
+            let s = w.snapshot(AT + STALE_MS * 2, Mode::Off);
+            assert!(s.codex_question_pending);
+            assert_eq!(s.waiting_since, AT);
+            assert_eq!(s.waiting_reason, "Which folder?");
+            assert!(!s.stalled);
+        }
+        w.feed(&record(
+            "response_item",
+            json!({"type":"message", "role":"user",
+            "content":[{"type":"input_text", "text":async_reply("q", 0)}]}),
+        ));
+        let s = w.snapshot(AT + 1, Mode::Off);
+        assert!(!s.codex_question_pending);
+        assert_eq!(s.waiting_since, 0);
+        assert!(s.is_running());
+    }
+
+    #[test]
+    fn async_answers_clear_only_the_matching_question() {
+        let mut w = watch();
+        ask_async(&mut w, "q", &["Which folder?", "Which format?"]);
+        ask_async(&mut w, "other", &["Which color?"]);
+        for reply in [
+            " ".to_string(),
+            async_reply("unknown", 0),
+            async_reply("q", 7),
+            "<send_user_message_question_reply>invalid</send_user_message_question_reply>".into(),
+        ] {
+            w.answer_questions(&reply);
+            assert_eq!(w.questions.len(), 3);
+        }
+        w.feed(&record(
+            "event_msg",
+            json!({"type":"user_message", "message":async_reply("q", 0)}),
+        ));
+        assert_eq!(
+            w.snapshot(AT + 1, Mode::Speech).waiting_reason,
+            "Which format?"
+        );
+        w.answer_questions(&async_reply("q", 0)); // Duplicate delivery.
+        assert_eq!(w.questions.len(), 2);
+        w.answer_questions(&async_reply("other", 0));
+        assert_eq!(
+            w.snapshot(AT + 1, Mode::Speech).waiting_reason,
+            "Which format?"
+        );
+        w.answer_questions(&async_reply("q", 1));
+        assert_eq!(w.snapshot(AT + 1, Mode::Speech).waiting_since, 0);
+    }
+
+    #[test]
+    fn chat_messages_clear_existing_questions_and_new_questions_still_alert() {
+        for (kind, payload) in [
+            (
+                "event_msg",
+                json!({"type":"user_message", "message":"Use the first folder."}),
+            ),
+            (
+                "response_item",
+                json!({"type":"message", "role":"user",
+                "content":[{"type":"input_text", "text":"Skip that and continue."}]}),
+            ),
+        ] {
+            let mut w = watch();
+            ask_async(&mut w, "q", &["Which folder?", "Which format?"]);
+            w.feed(&record(kind, payload));
+            assert!(!w.snapshot(AT + 1, Mode::Off).codex_question_pending);
+            assert_eq!(w.snapshot(AT + 1, Mode::Off).waiting_since, 0);
+            ask_async(&mut w, "next", &["Which color?"]);
+            assert_eq!(w.snapshot(AT + 2, Mode::Off).waiting_reason, "Which color?");
+            w.feed(&record(
+                "event_msg",
+                json!({"type":"exec_approval_request"}),
+            ));
+            w.answer_questions("I answered in chat.");
+            assert!(!w.snapshot(AT + 3, Mode::Off).codex_question_pending);
+            assert_eq!(
+                w.snapshot(AT + 3, Mode::Off).waiting_reason,
+                "Codex needs your approval"
+            );
+        }
+    }
+
+    #[test]
+    fn dismissal_survives_replay_without_hiding_other_tasks_or_new_questions() {
+        let dir = Fixture::new();
+        let path = dir.0.join("dismissed.json");
+        let mut bytes = meta("async-task");
+        let started = record("event_msg", json!({"type":"task_started", "turn_id":"t"}));
+        bytes.extend(&started);
+        let question = |call: &str| {
+            record(
+                "response_item",
+                json!({
+                    "type":"function_call", "name":"request_user_input_async", "call_id":call,
+                    "arguments":"{\"questions\":[{\"title\":\"Which folder?\"}]}"
+                }),
+            )
+        };
+        bytes.extend(question("q"));
+        fs::write(dir.path(), &bytes).unwrap();
+        let mut other = meta("other-task");
+        other.extend(&started);
+        other.extend(question("q")); // Call IDs are scoped to each task.
+        fs::write(dir.path().with_file_name("rollout-other.jsonl"), other).unwrap();
+        let mut tracker = Tracker::load(&path);
+        assert!(tracker
+            .read(&dir.0, AT + 1, Mode::Off)
+            .iter()
+            .all(|s| s.codex_question_pending));
+        // A failed save must not hide the reminder or poison a later retry.
+        assert!(tracker
+            .dismiss_questions("codex:async-task", &dir.path().join("no-directory"))
+            .is_err());
+        assert!(tracker
+            .read(&dir.0, AT + 1, Mode::Off)
+            .iter()
+            .all(|s| s.codex_question_pending));
+        tracker
+            .dismiss_questions("codex:async-task", &path)
+            .unwrap();
+        for tracker in [&mut tracker, &mut Tracker::load(&path)] {
+            let sessions = tracker.read(&dir.0, AT + 1, Mode::Off);
+            assert!(
+                !sessions
+                    .iter()
+                    .find(|s| s.session_id == "codex:async-task")
+                    .unwrap()
+                    .codex_question_pending
+            );
+            assert!(
+                sessions
+                    .iter()
+                    .find(|s| s.session_id == "codex:other-task")
+                    .unwrap()
+                    .codex_question_pending
+            );
+        }
+        assert_eq!(fs::read(dir.path()).unwrap(), bytes); // Codex stays untouched.
+        fs::OpenOptions::new()
+            .append(true)
+            .open(dir.path())
+            .unwrap()
+            .write_all(&question("new-question"))
+            .unwrap();
+        for tracker in [&mut tracker, &mut Tracker::load(&path)] {
+            assert!(tracker
+                .read(&dir.0, AT + 2, Mode::Off)
+                .iter()
+                .all(|s| s.codex_question_pending));
+        }
+    }
+
+    #[test]
+    fn failed_async_delivery_does_not_leave_an_alert() {
+        for output in [json!({"accepted":false}), json!({"error":"unavailable"})] {
+            let mut w = watch();
+            ask_async(&mut w, "q", &["Which folder?"]);
+            w.feed(&record(
+                "response_item",
+                json!({"type":"function_call_output", "call_id":"q", "output":output.to_string()}),
+            ));
+            assert!(!w.snapshot(AT + 1, Mode::Off).codex_question_pending);
+        }
+    }
+
+    #[test]
+    fn async_question_replays_after_restart_and_clears_after_a_late_reply() {
+        let dir = Fixture::new();
+        let mut bytes = meta("async-task");
+        bytes.extend(record(
+            "event_msg",
+            json!({"type":"task_started", "turn_id":"turn-1"}),
+        ));
+        bytes.extend(record(
+            "response_item",
+            json!({"type":"function_call", "name":"request_user_input_async",
+            "call_id":"q", "arguments":"{\"questions\":[{\"title\":\"Which folder?\"}]}"}),
+        ));
+        bytes.extend(record(
+            "response_item",
+            json!({"type":"function_call_output", "call_id":"q", "output":"{\"accepted\":true}"}),
+        ));
+        bytes.extend(record(
+            "event_msg",
+            json!({"type":"task_complete", "turn_id":"turn-1"}),
+        ));
+        fs::write(dir.path(), bytes).unwrap();
+        let mut tracker = Tracker::default();
+        let sessions = tracker.read(&dir.0, AT + 2000, Mode::Off);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].waiting_reason, "Which folder?");
+        assert_eq!(sessions[0].outcome, "done");
+        assert_eq!(
+            serde_json::to_value(&sessions[0]).unwrap()["codex_question_pending"],
+            true
+        );
+        assert!(Tracker::default().read(&dir.0, AT + 2000, Mode::Off)[0].codex_question_pending);
+
+        fs::OpenOptions::new()
+            .append(true)
+            .open(dir.path())
+            .unwrap()
+            .write_all(&record(
+                "response_item",
+                json!({"type":"message", "role":"user",
+                "content":[{"type":"input_text", "text":async_reply("q", 0)}]}),
+            ))
+            .unwrap();
+        for s in [
+            tracker.read(&dir.0, AT + 3000, Mode::Off).remove(0),
+            Tracker::default()
+                .read(&dir.0, AT + 3000, Mode::Off)
+                .remove(0),
+        ] {
+            assert!(!s.codex_question_pending);
+            assert_eq!(s.waiting_since, 0);
+            assert_eq!(s.outcome, "done");
+        }
     }
 
     #[test]
@@ -863,5 +1306,129 @@ mod tests {
         assert!(w.ready && !w.session.turn_tools_partial);
         assert_eq!(w.session.turn_tools, 0);
         assert_eq!(w.session.prompt_id, "new");
+    }
+
+    fn rollout(at: u64, ending: &str) -> Vec<u8> {
+        let mut bytes = record_at(
+            at,
+            "session_meta",
+            json!({
+                "id": "resumed-task", "cwd": "/projects/demo",
+                "source": "vscode", "originator": "Codex Desktop"
+            }),
+        );
+        bytes.extend(record_at(
+            at + 1,
+            "event_msg",
+            json!({
+                "type": "task_started", "turn_id": "first"
+            }),
+        ));
+        bytes.extend(record_at(
+            at + 2,
+            "event_msg",
+            json!({
+                "type": ending, "turn_id": "first"
+            }),
+        ));
+        bytes
+    }
+
+    #[test]
+    fn resumed_rollout_replaces_interruption_across_polls_and_restarts() {
+        let dir = Fixture::new();
+        let old = dir.path();
+        let new = old.with_file_name("rollout-resumed-task_incarnation.jsonl");
+        fs::write(&old, rollout(AT, "turn_aborted")).unwrap();
+        let mut tracker = Tracker::default();
+        assert_eq!(
+            tracker.read(&dir.0, AT + 10, Mode::Off)[0].outcome,
+            "failed"
+        );
+
+        fs::write(&new, rollout(AT + 100, "task_complete")).unwrap();
+        tracker.scanned = None;
+        for _ in 0..3 {
+            let sessions = tracker.read(&dir.0, AT + 200, Mode::Off);
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0].outcome, "done");
+            assert_eq!(sessions[0].turn_ended_ms, AT + 102);
+        }
+        // Even a later write/event in the obsolete file cannot regain ownership.
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&old)
+            .unwrap()
+            .write_all(&record_at(
+                AT + 300,
+                "event_msg",
+                json!({"type": "turn_aborted"}),
+            ))
+            .unwrap();
+        let mut restarted = Tracker::default();
+        let sessions = restarted.read(&dir.0, AT + 400, Mode::Off);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].outcome, "done");
+
+        // The selected incarnation still follows turns, including real failures.
+        let mut file = fs::OpenOptions::new().append(true).open(&new).unwrap();
+        file.write_all(&record_at(
+            AT + 500,
+            "event_msg",
+            json!({
+                "type": "task_started", "turn_id": "next"
+            }),
+        ))
+        .unwrap();
+        let sessions = restarted.read(&dir.0, AT + 501, Mode::Off);
+        assert_eq!(sessions.len(), 1);
+        assert!(sessions[0].is_running() && sessions[0].outcome.is_empty());
+        file.write_all(&record_at(
+            AT + 600,
+            "event_msg",
+            json!({
+                "type": "turn_aborted", "turn_id": "next"
+            }),
+        ))
+        .unwrap();
+        let sessions = restarted.read(&dir.0, AT + 601, Mode::Off);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].outcome, "failed");
+        assert_eq!(sessions[0].turn_ended_ms, AT + 600);
+    }
+
+    #[test]
+    fn replacement_replay_never_publishes_the_obsolete_outcome() {
+        let dir = Fixture::new();
+        let old = dir.path();
+        let new = old.with_file_name("rollout-resumed-task_incarnation.jsonl");
+        fs::write(&old, rollout(AT, "turn_aborted")).unwrap();
+        let mut bytes = rollout(AT + 100, "task_complete");
+        bytes.extend(vec![b' '; READ_BYTES as usize * 2]);
+        bytes.push(b'\n');
+        fs::write(&new, bytes).unwrap();
+        let mut tracker = Tracker::default();
+        for _ in 0..2 {
+            assert!(tracker.read(&dir.0, AT + 200, Mode::Off).is_empty());
+        }
+        let sessions = tracker.read(&dir.0, AT + 200, Mode::Off);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].outcome, "done");
+    }
+
+    #[test]
+    fn duplicate_rollouts_with_equal_timestamps_have_a_stable_winner() {
+        let dir = Fixture::new();
+        fs::write(dir.path(), rollout(AT, "turn_aborted")).unwrap();
+        fs::write(
+            dir.path().with_file_name("rollout-z.jsonl"),
+            rollout(AT, "task_complete"),
+        )
+        .unwrap();
+        for _ in 0..8 {
+            let sessions = Tracker::default().read(&dir.0, AT + 10, Mode::Off);
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0].outcome, "done");
+        }
     }
 }

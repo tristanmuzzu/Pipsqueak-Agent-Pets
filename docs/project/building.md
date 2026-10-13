@@ -4,7 +4,7 @@
 
 ## Build
 
-Needs Node 20+ and a Rust toolchain everywhere, plus the platform's own
+Needs Node 22.12+ and a Rust toolchain everywhere, plus the platform's own
 prerequisites.
 
 **Windows:** the MSVC C++ build tools.
@@ -23,8 +23,7 @@ wants `webkit2gtk4.1-devel`, `libappindicator-gtk3-devel`, `librsvg2-devel` and
 `libxdo-devel`. Then, on either:
 
 ```bash
-npm install
-npm run sprites
+npm ci
 npm run app:build
 ```
 
@@ -33,6 +32,13 @@ That produces `.deb`, `.rpm` and `.AppImage` under
 `--bundles deb` and friends narrow it down when only one is wanted.
 
 `npm run app:dev` runs it with hot reload.
+
+Source edits and passing tests do not update an installed pet. For an authorized
+local update, build the frontend and native executable, preserve a backup of the
+installed executable, replace it, and restart through the existing launcher.
+On Linux, compare the built executable's SHA-256 with `/proc/<pet-pid>/exe` after
+restart and check the fresh `~/.pipsqueak/running.json` heartbeat. Matching version
+numbers alone do not prove the running copy contains an unversioned fix.
 
 `npm run dev` serves the frontend alone in a browser, with a demo loop standing
 in for real sessions. `?panel=welcome` and `?panel=doctor` render those panels

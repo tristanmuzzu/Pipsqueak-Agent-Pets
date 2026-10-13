@@ -104,6 +104,23 @@ export const DISPLAY = {
 
 export const priority = (state) => DISPLAY[state]?.rank ?? 1
 
+/** An unanswered question owns the pet even when another card is first. */
+export function petState(groups, preferredKey, now = Date.now()) {
+  if (groups.some((group) => group.state === 'waiting')) return 'waiting'
+  const leader = groups.find((group) => group.key === preferredKey)
+  if (!leader) return 'idle'
+  if (['done', 'failed'].includes(leader.state) &&
+      now - (leader.session.outcome_ms || 0) >= DONE_LINGER_MS) return 'idle'
+  return leader.state
+}
+
+/** Async questions remain actionable even after their turn finishes. */
+export function dismissable(state, session) {
+  if (session.codex_question_pending) return false
+  return state === 'done' || state === 'failed' ||
+    (state === 'waiting' && Boolean(session.outcome) && !session.pending_since)
+}
+
 /**
  * What the session is blocked on, once it has been blocked long enough to be
  * worth saying. Empty while the prompt is still inside the debounce.

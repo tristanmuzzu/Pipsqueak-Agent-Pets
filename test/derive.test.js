@@ -6,6 +6,8 @@ import {
   WAITING_DEBOUNCE_MS,
   blockedOn,
   displayState,
+  dismissable,
+  petState,
   holdState,
   isNewer,
   relativeTime,
@@ -57,6 +59,45 @@ test('an explicit notification outranks a pending permission', () => {
     pending_detail: 'run: npm install'
   })
   assert.equal(blockedOn(session, NOW), 'Waiting for your reply')
+})
+
+test('an unanswered Codex question needs you while working and after completion', () => {
+  for (const fields of [{ state: 'running' }, { state: 'idle', outcome: 'done' }]) {
+    const session = quiet({
+      provider: 'codex',
+      ...fields,
+      waiting_since: NOW - 5000,
+      waiting_reason: 'Which folder?'
+    })
+    assert.equal(blockedOn(session, NOW), 'Which folder?')
+    assert.equal(displayState(session, NOW), 'waiting')
+  }
+})
+
+test('a question keeps the pet orange regardless of card order or other activity', () => {
+  const question = { key: 'question', state: 'waiting', session: quiet({ outcome: 'done' }) }
+  for (const state of ['running', 'thinking', 'done', 'failed', 'idle']) {
+    const other = { key: 'other', state, session: quiet({ outcome_ms: NOW }) }
+    assert.equal(petState([other, question], 'other', NOW), 'waiting')
+    assert.equal(petState([question, other], 'other', NOW), 'waiting')
+  }
+  question.state = 'running'
+  assert.equal(petState([question], 'question', NOW), 'running')
+  question.state = 'done'
+  question.session.outcome_ms = NOW
+  assert.equal(petState([question], 'question', NOW), 'done')
+  assert.equal(petState([question], 'question', NOW + DONE_LINGER_MS), 'idle')
+  assert.equal(petState([], undefined, NOW), 'idle')
+})
+
+test('completion acknowledgement cannot hide an unanswered async question', () => {
+  const session = quiet({ outcome: 'done', codex_question_pending: true })
+  assert.equal(dismissable('waiting', session), false)
+  session.codex_question_pending = false
+  assert.equal(dismissable('done', session), true)
+  assert.equal(dismissable('waiting', session), true) // Claude idle notification.
+  session.pending_since = NOW
+  assert.equal(dismissable('waiting', session), false) // Actual approval prompt.
 })
 
 test('a background turn ending is not a card that needs you', () => {

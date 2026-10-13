@@ -17,8 +17,7 @@ were running, and what the card said versus what was actually going on.
 ## Building
 
 ```bash
-npm install
-npm run sprites
+npm ci
 npm run app:dev
 ```
 

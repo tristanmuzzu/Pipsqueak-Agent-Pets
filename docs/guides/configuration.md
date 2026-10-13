@@ -157,7 +157,7 @@ On Windows the binary is a GUI-subsystem app, so CLI output is also written to
 There is a small plugin so you never have to open a terminal:
 
 ```bash
-/plugin marketplace add tristanmuzzu/Pets-for-Claude-Code
+/plugin marketplace add tristanmuzzu/Pipsqueak-Agent-Pets
 ```
 
 ```bash

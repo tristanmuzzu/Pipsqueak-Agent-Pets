@@ -1,10 +1,10 @@
 [package]
 name = "pipsqueak"
 version = "0.8.0"
-description = "A desktop pet that shows what Claude Code is doing, in its own words."
+description = "A desktop pet that shows what Claude Code and Codex are doing, in their own words."
 authors = ["Tristan Rafe Muzzu"]
 license = "MIT"
-repository = "https://github.com/tristanmuzzu/Pets-for-Claude-Code"
+repository = "https://github.com/tristanmuzzu/Pipsqueak-Agent-Pets"
 edition = "2021"
 rust-version = "1.77"
 

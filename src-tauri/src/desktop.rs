@@ -377,7 +377,7 @@ pub fn set_autostart(enabled: bool) -> Result<(), String> {
             "[Desktop Entry]\n\
              Type=Application\n\
              Name=Pipsqueak\n\
-             Comment=Desktop pet for Claude Code\n\
+             Comment=Desktop pet for Claude Code and Codex\n\
              Exec={}\n\
              Icon=pipsqueak\n\
              Terminal=false\n\

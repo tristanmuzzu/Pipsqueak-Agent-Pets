@@ -18,8 +18,10 @@ import {
   WORKING,
   blockedOn,
   displayState,
+  dismissable,
   holdState,
   isNewer,
+  petState,
   relativeTime,
   runningCount,
   turnElapsed,
@@ -190,18 +192,6 @@ const acknowledged = new Set()
 let promoted = null
 const outcomeKey = (session) => `${session.session_id}@${session.outcome_ms || 0}`
 const settled = (state) => state === 'done' || state === 'failed'
-/**
- * A card a click may put away.
- *
- * A finished turn, and a finished turn that the idle notification has since
- * turned into "Waiting for your reply": Claude Code fires that sixty seconds
- * after every answer, so without this every chat not typed into for a minute
- * became a "Needs you" card that no click could dismiss, sitting above the
- * chats that were actually working. A real permission prompt is never
- * dismissable — the question is still being asked.
- */
-const dismissable = (state, session) =>
-  settled(state) || (state === 'waiting' && Boolean(session.outcome) && !session.pending_since)
 /**
  * An urgent state that is actually asking for something.
  *
@@ -411,8 +401,24 @@ function buildCard(key) {
   // A hidden window pauses animations, so animationend may never come; the
   // class must still die or every queued entrance replays on unhide.
   setTimeout(entered, 1000)
-  node.querySelector('.close').addEventListener('click', (event) => {
+  node.querySelector('.close').addEventListener('click', async (event) => {
     event.stopPropagation()
+    const session = sessions.find((candidate) => candidate.session_id === key)
+    if (session?.codex_question_pending) {
+      try {
+        if (IS_TAURI) {
+          sessions = await invoke('dismiss_codex_questions', { sessionId: key })
+        } else {
+          Object.assign(session, { codex_question_pending: false, waiting_since: 0, waiting_reason: '' })
+        }
+        const view = viewFor(key)
+        view.heldState = ''
+        view.heldUntil = 0
+      } catch {
+        showNotice('Could not dismiss this question. Please try again.')
+        return
+      }
+    }
     if (config.pinnedSession === key) { config.pinnedSession = ''; saveConfig() }
     // Closing a finished card dismisses it outright. Leaving a chip behind
     // would keep a project in the row that means "still going on".
@@ -469,6 +475,9 @@ function buildCard(key) {
 
 function paintCard(node, card, compact = false) {
   const { session, key, state } = card
+  const close = node.querySelector('.close')
+  close.title = session.codex_question_pending ? 'Dismiss question reminder' : 'Close'
+  close.setAttribute('aria-label', close.title)
 
   const agent = agentIdentity(session)
   node.dataset.provider = agent.id
@@ -800,9 +809,7 @@ function render() {
   // The card waits for you; the pet does not. A completion is worth a little
   // celebration, not an hour of one, so once the news has gone stale the pet
   // settles back even though the card is still sitting there saying "Done".
-  const leader = byKey.get(slots[0])
-  const celebrating = leader && settled(leader.state) && !isFresh(leader.session)
-  renderer.setState(notice || !leader || celebrating ? 'idle' : leader.state)
+  renderer.setState(notice ? 'idle' : petState(groups, slots[0]))
 
   // A pet that visibly dozes is doing real work: it says "nothing is running
   // and I will not interrupt you", which is different from an overlay that has
@@ -1075,8 +1082,8 @@ function showNotice(message) {
 }
 
 // --- updates -------------------------------------------------------------
-const RELEASES_API = 'https://api.github.com/repos/tristanmuzzu/Pets-for-Claude-Code/releases/latest'
-const RELEASES_PAGE = 'https://github.com/tristanmuzzu/Pets-for-Claude-Code/releases'
+const RELEASES_API = 'https://api.github.com/repos/tristanmuzzu/Pipsqueak-Agent-Pets/releases/latest'
+const RELEASES_PAGE = 'https://github.com/tristanmuzzu/Pipsqueak-Agent-Pets/releases'
 /** Never at launch, and never at the same moment on every machine. */
 const FIRST_CHECK_MS = 2 * 60_000
 const FIRST_CHECK_JITTER_MS = 3 * 60_000

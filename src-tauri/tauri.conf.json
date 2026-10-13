@@ -42,8 +42,8 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "shortDescription": "Desktop pet for Claude Code",
-    "longDescription": "Pipsqueak is a transparent desktop companion that mirrors live Claude Code state (thinking, running tools, waiting on permission, failed, or done) so you can keep an eye on an agent while doing something else.",
+    "shortDescription": "Desktop pet for Claude Code and Codex",
+    "longDescription": "Pipsqueak is a transparent desktop companion that mirrors live Claude Code and Codex state (thinking, running tools, waiting on permission, failed, or done) so you can keep an eye on an agent while doing something else.",
     "windows": {
       "nsis": {
         "installMode": "currentUser",

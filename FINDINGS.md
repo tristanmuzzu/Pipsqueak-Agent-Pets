@@ -26,6 +26,13 @@ Root causes found, in order of contribution:
 
 ## Fixed — backend truthfulness
 
+- **Codex resumed-rollout collision (2026-09-22)** `codex.rs` — a resumed
+  desktop task can leave multiple rollouts with the same conversation ID.
+  Publishing each file independently let an old interruption outrank a later
+  successful turn; live Active temporarily hid it, and Idle exposed it again.
+  Select the newest session-metadata incarnation before publishing, including
+  during bounded startup replay. Regression tests cover subsequent turns,
+  restart, obsolete-file updates, deterministic ties and genuine interruptions.
 - **S-1 / H-2** `hook.rs:503`, `derive.js:93` — every `Stop::Finished` now
   settles for 2000ms, and `displayState` reports `running` (not the stored
   `idle`) inside the settle window, so the card never leaves the DOM at turn

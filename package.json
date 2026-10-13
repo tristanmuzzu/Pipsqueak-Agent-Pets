@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.8.0",
   "type": "module",
-  "description": "A desktop pet that shows what Claude Code is doing, in its own words.",
+  "description": "A desktop pet that shows what Claude Code and Codex are doing, in their own words.",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

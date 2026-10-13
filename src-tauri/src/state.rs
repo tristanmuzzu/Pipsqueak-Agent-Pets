@@ -217,6 +217,9 @@ pub struct Session {
     /// any forward progress.
     pub waiting_since: u64,
     pub waiting_reason: String,
+    /// Rollout-backed async input survives live Working/Idle status and cannot
+    /// be dismissed as a completed turn while its question is unanswered.
+    pub codex_question_pending: bool,
 
     /// A permission prompt Claude Code raised and has not resolved.
     ///

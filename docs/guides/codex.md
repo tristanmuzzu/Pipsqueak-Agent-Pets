@@ -47,6 +47,13 @@ file per poll, and the last 4 MiB on initial discovery of large logs. Startup ca
 take several polls while this tail is replayed. Incomplete/oversized records
 are skipped safely; no transcript or config is modified.
 
+Resuming a desktop task can create a new rollout file with the same conversation
+ID. Only the newest rollout incarnation supplies its card, ordered by the
+session metadata timestamp (then activity timestamp and path to break ties).
+An older file's interruption cannot override later turns, even after restarting
+the pet. While the replacement's bounded replay catches up, the old outcome
+stays hidden. File modification times are used for discovery, not ownership.
+
 The optional session index supplies the task title. When a Codex version doesn't
 write it, the project and turn's prompt are the fallback. These local file
 formats are best-effort integration points and may change with Codex releases.
@@ -65,6 +72,19 @@ formats are best-effort integration points and may change with Codex releases.
   are not independently tracked.
 - An explicit interruption or terminal error is a failure, never Done.
 - User-input tool calls show Needs you until the matching result arrives.
+  Async questions keep **Needs you** and the question visible while Codex
+  continues working, including after a turn completes. The tool's immediate
+  acknowledgement does not count as an answer. Each question clears when its
+  matching structured reply arrives. Your next ordinary chat message clears
+  existing question reminders for that task too. Live Working/Idle status and
+  agent progress leave them visible. Failed delivery clears that request's questions.
+  An unanswered question keeps the pet orange even when another card is first
+  or the cards are hidden. A completed turn alone cannot dismiss a question.
+  Close its card with **× (Dismiss question reminder)** to dismiss the task's
+  current questions in Pipsqueak, including after restarting the pet. New
+  questions still alert. This leaves Codex's question forms available to answer.
+  Codex's **Skip** button currently changes only its internal UI state, so
+  Pipsqueak cannot observe it; use the card's × or send a chat message instead.
   On Linux and macOS, a passive connection to Codex Desktop's private local
   socket also observes `waitingOnApproval` and `waitingOnUserInput` flags.
   This covers desktop waits that are absent from rollouts. Resolving the wait
