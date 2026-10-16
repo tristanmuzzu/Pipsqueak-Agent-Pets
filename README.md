@@ -37,8 +37,8 @@ prerequisites, checks and removal.
 the welcome panel offers to register hooks. Review that change, then restart
 Claude Code. The welcome panel also offers login startup; it can be disabled.
 
-GitHub source includes newer Codex question-reminder and resumed-chat fixes
-than the 0.8.0 installers. Build from source if you need those changes.
+Version 0.9.0 includes Codex tracking, question reminders, resumed-chat fixes,
+and stable bubbles during large session-log updates.
 macOS is untested and login startup is not implemented there.
 
 ## Send your agent here

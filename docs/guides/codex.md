@@ -47,6 +47,12 @@ file per poll, and the last 4 MiB on initial discovery of large logs. Startup ca
 take several polls while this tail is replayed. Incomplete/oversized records
 are skipped safely; no transcript or config is modified.
 
+Once a rollout has caught up, its last complete state stays visible while a
+large append is read across multiple polls. This also keeps its live desktop
+subscription attached. Intermediate completion events stay hidden until replay
+catches up; a newly discovered or replaced rollout still waits for its first
+complete replay before appearing.
+
 Resuming a desktop task can create a new rollout file with the same conversation
 ID. Only the newest rollout incarnation supplies its card, ordered by the
 session metadata timestamp (then activity timestamp and path to break ties).

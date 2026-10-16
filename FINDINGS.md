@@ -26,6 +26,15 @@ Root causes found, in order of contribution:
 
 ## Fixed — backend truthfulness
 
+- **Codex cards disappearing during large appends (2026-10-16)** `codex.rs`
+  — every append exceeding the 256 KiB poll budget removed an already visible
+  session until replay caught up. That also removed its live-desktop subscription
+  and could leave a completed card driving the pet's green state. Retain the
+  last fully replayed state during catch-up, without publishing intermediate
+  completion events. Synthetic regressions cover a 10 MiB burst spanning over
+  twelve seconds of polls, subsequent completion, archival, truncation,
+  narration preferences, stale timeout and question dismissal. New/replacement
+  rollouts still suppress obsolete outcomes during initial replay.
 - **Codex resumed-rollout collision (2026-09-22)** `codex.rs` — a resumed
   desktop task can leave multiple rollouts with the same conversation ID.
   Publishing each file independently let an old interruption outrank a later

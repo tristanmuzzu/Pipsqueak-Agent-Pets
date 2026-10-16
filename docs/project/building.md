@@ -98,7 +98,7 @@ against the release checklist below.
    glibc is forward-compatible and not backward, so the runner's version is the
    floor for everyone who downloads the result, and 22.04 is the oldest image
    that still carries webkit2gtk-4.1.
-5. Work through the checklist, then publish the draft. Six assets: `.exe` and
+5. Work through the checklist, then publish the draft. Five installer assets: `.exe` and
    `.msi` from Windows, `.deb`, `.rpm` and `.AppImage` from Linux.
 
 ### Release checklist

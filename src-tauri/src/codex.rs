@@ -39,6 +39,9 @@ struct Watch {
     oversized: bool,
     ready: bool,
     accepted: bool,
+    // Keep the last fully replayed state while a later append is being read.
+    // Partial replay can contain a completion superseded later in the burst.
+    published: Option<Published>,
     session: Session,
     speech: String,
     thought: String,
@@ -47,6 +50,14 @@ struct Watch {
     calls: HashSet<String>,
     waiting_call: String,
     questions: Vec<Question>,
+}
+
+struct Published {
+    session: Session,
+    speech: String,
+    thought: String,
+    prefer_thought: bool,
+    question_calls: HashSet<String>,
 }
 
 struct Question {
@@ -127,7 +138,14 @@ impl Tracker {
             .watches
             .values()
             .filter(|watch| watch.session.session_id == session_id)
-            .flat_map(|watch| watch.questions.iter().map(|q| q.call_id.clone()))
+            .flat_map(|watch| {
+                watch.questions.iter().map(|q| q.call_id.clone()).chain(
+                    watch
+                        .published
+                        .iter()
+                        .flat_map(|p| p.question_calls.iter().cloned()),
+                )
+            })
             .collect();
         if calls.is_empty() {
             return Ok(());
@@ -143,6 +161,14 @@ impl Tracker {
         for watch in self.watches.values_mut() {
             if watch.session.session_id == session_id {
                 watch.questions.clear();
+                if let Some(published) = &mut watch.published {
+                    published.question_calls.clear();
+                    if published.session.codex_question_pending {
+                        published.session.codex_question_pending = false;
+                        published.session.waiting_since = 0;
+                        published.session.waiting_reason.clear();
+                    }
+                }
             }
         }
         Ok(())
@@ -181,6 +207,9 @@ impl Tracker {
             if let Some(calls) = self.dismissed_questions.get(&watch.session.session_id) {
                 watch.questions.retain(|q| !calls.contains(&q.call_id));
             }
+            if watch.ready {
+                watch.published = Some(watch.publication());
+            }
             let entry = current
                 .entry(&watch.session.session_id)
                 .or_insert((path, watch));
@@ -196,10 +225,10 @@ impl Tracker {
         }
         let mut sessions = Vec::new();
         for (_, watch) in current.into_values() {
-            if !watch.ready {
+            let Some(published) = &watch.published else {
                 continue;
-            }
-            let mut s = watch.snapshot(now, mode);
+            };
+            let mut s = published.snapshot(now, mode);
             if now.saturating_sub(s.updated_ms) > RECENT_MS {
                 continue;
             }
@@ -708,7 +737,7 @@ impl Watch {
         }
     }
 
-    fn snapshot(&self, now: u64, mode: Mode) -> Session {
+    fn publication(&self) -> Published {
         let mut s = self.session.clone();
         // Questions outlive tool progress and turn boundaries. Project them
         // last, independently of blocking approvals and completion state.
@@ -717,12 +746,28 @@ impl Watch {
             s.waiting_since = question.since;
             s.waiting_reason = question.title.clone();
         }
+        Published {
+            session: s,
+            speech: self.speech.clone(),
+            thought: self.thought.clone(),
+            prefer_thought: self.thought_ms > self.speech_ms,
+            question_calls: self.questions.iter().map(|q| q.call_id.clone()).collect(),
+        }
+    }
+
+    #[cfg(test)]
+    fn snapshot(&self, now: u64, mode: Mode) -> Session {
+        self.publication().snapshot(now, mode)
+    }
+}
+
+impl Published {
+    fn snapshot(&self, now: u64, mode: Mode) -> Session {
+        let mut s = self.session.clone();
         s.narration = match mode {
             Mode::Off => String::new(),
             Mode::Thoughts
-                if self.thought_ms > self.speech_ms
-                    && !self.thought.is_empty()
-                    && s.outcome.is_empty() =>
+                if self.prefer_thought && !self.thought.is_empty() && s.outcome.is_empty() =>
             {
                 self.thought.clone()
             }
@@ -1306,6 +1351,144 @@ mod tests {
         assert!(w.ready && !w.session.turn_tools_partial);
         assert_eq!(w.session.turn_tools, 0);
         assert_eq!(w.session.prompt_id, "new");
+    }
+
+    #[test]
+    fn active_card_survives_a_large_append_until_replay_catches_up() {
+        let dir = Fixture::new();
+        let path = dir.path();
+        let mut bytes = meta("busy-task");
+        bytes.extend(record(
+            "event_msg",
+            json!({"type":"task_started", "turn_id":"first"}),
+        ));
+        fs::write(&path, bytes).unwrap();
+        let mut tracker = Tracker::default();
+        assert!(tracker.read(&dir.0, AT, Mode::Speech)[0].is_running());
+
+        // A burst can contain an old completion before the next turn starts.
+        // Never publish that intermediate state, or drop the existing card
+        // (which also removes its live-desktop subscription).
+        let mut append = record(
+            "event_msg",
+            json!({"type":"task_complete", "turn_id":"first"}),
+        );
+        append.extend(vec![b' '; READ_BYTES as usize * 40]);
+        append.push(b'\n');
+        append.extend(record_at(
+            AT + 1,
+            "event_msg",
+            json!({"type":"task_started", "turn_id":"second"}),
+        ));
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(&append)
+            .unwrap();
+        for poll in 1..=41 {
+            let sessions = tracker.read(&dir.0, AT + poll * 300, Mode::Speech);
+            assert_eq!(sessions.len(), 1, "card missing at poll {poll}");
+            assert!(sessions[0].is_running());
+            assert!(sessions[0].outcome.is_empty());
+            assert_eq!(sessions[0].chat_id, "busy-task");
+        }
+        assert_eq!(
+            tracker.read(&dir.0, AT + 13_000, Mode::Speech)[0].prompt_id,
+            "second"
+        );
+
+        // Actual completion and archival still take effect.
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(&record_at(
+                AT + 14_000,
+                "event_msg",
+                json!({"type":"task_complete", "turn_id":"second"}),
+            ))
+            .unwrap();
+        assert_eq!(
+            tracker.read(&dir.0, AT + 15_000, Mode::Speech)[0].outcome,
+            "done"
+        );
+        fs::rename(&path, dir.0.join("archived.jsonl")).unwrap();
+        assert!(tracker.read(&dir.0, AT + 16_000, Mode::Speech).is_empty());
+    }
+
+    #[test]
+    fn retained_card_honors_narration_settings_timeout_and_question_dismissal() {
+        let dir = Fixture::new();
+        let path = dir.path();
+        let mut bytes = meta("busy-task");
+        bytes.extend(record(
+            "event_msg",
+            json!({"type":"task_started", "turn_id":"first"}),
+        ));
+        bytes.extend(record(
+            "event_msg",
+            json!({"type":"agent_message", "message":"Checking the files."}),
+        ));
+        bytes.extend(record_at(
+            AT + 1,
+            "event_msg",
+            json!({"type":"agent_reasoning", "text":"Considering the result."}),
+        ));
+        fs::write(&path, bytes).unwrap();
+        let mut tracker = Tracker::default();
+        tracker.read(&dir.0, AT + 2, Mode::Speech);
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(&vec![b' '; READ_BYTES as usize * 4])
+            .unwrap();
+        file.write_all(b"\n").unwrap();
+        assert_eq!(
+            tracker.read(&dir.0, AT + 3, Mode::Thoughts)[0].narration,
+            "Considering the result."
+        );
+        assert!(tracker.read(&dir.0, AT + 4, Mode::Off)[0]
+            .narration
+            .is_empty());
+        assert_eq!(
+            tracker.read(&dir.0, AT + 5, Mode::Speech)[0].narration,
+            "Checking the files."
+        );
+        let stale = tracker.read(&dir.0, AT + STALE_MS + 2, Mode::Speech);
+        assert!(stale[0].stalled);
+        assert!(stale[0].outcome.is_empty());
+        tracker.read(&dir.0, AT + 6, Mode::Speech);
+
+        file.write_all(&record(
+            "response_item",
+            json!({"type":"function_call", "name":"request_user_input_async", "call_id":"q",
+                "arguments":"{\"questions\":[{\"title\":\"Which folder?\"}]}"}),
+        ))
+        .unwrap();
+        assert!(tracker.read(&dir.0, AT + 7, Mode::Speech)[0].codex_question_pending);
+        // The parser may already have consumed the answer while the displayed
+        // snapshot still contains the question. Dismissal must work then too.
+        file.write_all(&record(
+            "event_msg",
+            json!({"type":"user_message", "message":"Use the current folder."}),
+        ))
+        .unwrap();
+        file.write_all(&vec![b' '; READ_BYTES as usize * 3])
+            .unwrap();
+        file.write_all(b"\n").unwrap();
+        assert!(tracker.read(&dir.0, AT + 8, Mode::Speech)[0].codex_question_pending);
+        tracker
+            .dismiss_questions("codex:busy-task", &dir.0.join("dismissed.json"))
+            .unwrap();
+        let sessions = tracker.read(&dir.0, AT + 9, Mode::Speech);
+        assert!(!sessions[0].codex_question_pending);
+        assert_eq!(sessions[0].waiting_since, 0);
+
+        // Rewriting/truncating a rollout invalidates its retained state.
+        fs::write(&path, rollout(AT + 10, "turn_aborted")).unwrap();
+        let sessions = tracker.read(&dir.0, AT + 20, Mode::Speech);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "codex:resumed-task");
+        assert_eq!(sessions[0].outcome, "failed");
     }
 
     fn rollout(at: u64, ending: &str) -> Vec<u8> {

@@ -1,7 +1,7 @@
 {
   "name": "pipsqueak",
   "description": "Turn the Pipsqueak desktop pet on and off, and switch pets, without leaving Claude Code.",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "author": {
     "name": "Tristan Rafe Muzzu"
   },
