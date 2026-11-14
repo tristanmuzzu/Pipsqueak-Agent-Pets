@@ -34,7 +34,7 @@ fn bridge() -> &'static Mutex<Bridge> {
 
 pub fn summary() -> Value {
     let b = bridge().lock().unwrap_or_else(|e| e.into_inner());
-    json!({"connected": b.connected, "desired_tasks": b.desired.len(), "observed_tasks": b.tasks.values().filter(|p| matches!(p.status["type"].as_str(), Some("active" | "idle"))).count(),
+    json!({"connected": b.connected, "desired_tasks": b.desired.len(), "observed_tasks": b.tasks.values().filter(|p| matches!(p.status["type"].as_str(), Some("active" | "idle" | "systemError"))).count(),
         "active_tasks": b.tasks.values().filter(|p| p.status["type"] == "active").count()})
 }
 
@@ -55,7 +55,7 @@ pub fn decorate(sessions: &mut [Session]) {
 impl Projection {
     fn decorate(&self, s: &mut Session) {
         let kind = self.status["type"].as_str().unwrap_or("");
-        if kind != "active" && kind != "idle" {
+        if kind != "active" && kind != "idle" && kind != "systemError" {
             return;
         }
         if !s.codex_question_pending {
@@ -68,6 +68,18 @@ impl Projection {
         s.pending_risk.clear();
         s.pending_agent.clear();
         s.stalled = false;
+        if kind == "systemError" {
+            s.state = "idle".into();
+            s.outcome.clear();
+            s.outcome_ms = 0;
+            s.waiting_since = self.changed_ms;
+            s.waiting_reason =
+                "Codex encountered a system error. Open the task to continue.".into();
+            s.pending_since = self.changed_ms;
+            s.pending_tool = "Codex".into();
+            s.pending_detail = s.waiting_reason.clone();
+            return;
+        }
         if kind == "active" {
             s.state = "running".into();
             s.outcome.clear();
@@ -81,7 +93,14 @@ impl Projection {
             } else {
                 ""
             };
-            if !reason.is_empty() && !s.codex_question_pending {
+            // A blocking approval outranks an optional async question. The
+            // question remains in the rollout and returns once approval ends.
+            if has("waitingOnApproval") {
+                s.pending_since = self.changed_ms;
+                s.pending_tool = "Codex".into();
+                s.pending_detail = reason.into();
+            }
+            if !reason.is_empty() && (!s.codex_question_pending || has("waitingOnApproval")) {
                 s.waiting_since = self.changed_ms;
                 s.waiting_reason = reason.into();
             }
@@ -503,10 +522,9 @@ mod tests {
     }
 
     #[test]
-    fn async_question_survives_live_working_idle_and_blocking_flags() {
+    fn async_question_survives_live_working_idle_and_input_flags() {
         for status in [
             json!({"type":"active", "activeFlags":[]}),
-            json!({"type":"active", "activeFlags":["waitingOnApproval"]}),
             json!({"type":"active", "activeFlags":["waitingOnUserInput"]}),
             json!({"type":"idle"}),
         ] {
@@ -522,6 +540,48 @@ mod tests {
             assert_eq!(s.waiting_since, 1000);
             assert_eq!(s.waiting_reason, "Which folder?");
         }
+    }
+    #[test]
+    fn blocking_approval_takes_priority_over_an_async_question() {
+        let mut b = fixture();
+        b.receive(
+            &snapshot(json!({"type":"active", "activeFlags":["waitingOnApproval"]})),
+            2000,
+        );
+        let mut s = Session {
+            codex_question_pending: true,
+            waiting_since: 1000,
+            waiting_reason: "Which folder?".into(),
+            ..Default::default()
+        };
+        b.tasks["task"].decorate(&mut s);
+        assert!(s.codex_question_pending);
+        assert_eq!(s.pending_since, 2000);
+        assert_eq!(s.waiting_since, 2000);
+        assert_eq!(s.waiting_reason, "Approval needed in Codex");
+    }
+
+    #[test]
+    fn system_error_needs_attention_and_recovery_clears_it() {
+        let mut b = fixture();
+        b.receive(&snapshot(json!({"type":"systemError"})), 2000);
+        let mut s = Session {
+            state: "running".into(),
+            outcome: "done".into(),
+            stalled: true,
+            ..Default::default()
+        };
+        b.tasks["task"].decorate(&mut s);
+        assert_eq!(s.waiting_since, 2000);
+        assert_eq!(s.pending_since, 2000);
+        assert!(s.waiting_reason.contains("system error"));
+        assert!(s.outcome.is_empty());
+        assert!(!s.stalled);
+        b.receive(&snapshot(json!({"type":"active", "activeFlags":[]})), 3000);
+        b.tasks["task"].decorate(&mut s);
+        assert_eq!(s.waiting_since, 0);
+        assert_eq!(s.pending_since, 0);
+        assert_eq!(s.state, "running");
     }
     #[test]
     fn wrong_host_version_and_owner_are_not_authoritative() {

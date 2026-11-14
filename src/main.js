@@ -17,6 +17,7 @@ import {
   WAITING_DEBOUNCE_MS,
   WORKING,
   blockedOn,
+  attentionKey,
   displayState,
   dismissable,
   holdState,
@@ -225,7 +226,7 @@ function viewFor(key) {
       // it was working — a card, a slot, and the pet animating as busy, on no
       // evidence at all.
       lastStable: 'idle',
-      wasUrgent: false,
+      alertedRequest: '',
       // The narrower edge: urgent AND actually asking for something. Its own
       // field so an idle notification cannot swallow the edge a real
       // permission prompt needs.
@@ -384,6 +385,7 @@ function acknowledge(key) {
 // --- rendering ----------------------------------------------------------
 function buildCard(key) {
   const node = el.template.content.firstElementChild.cloneNode(true)
+  node.prepend(attentionRing())
   // The entrance animation rides a one-shot class: kept on the .card rule it
   // replayed from opacity 0 whenever the card was reordered, because moving a
   // connected node re-inserts it and re-insertion restarts its animations.
@@ -660,6 +662,13 @@ function kindLabel(state, session) {
   return session.kind || 'Working'
 }
 
+function attentionRing() {
+  const ring = document.createElement('span')
+  ring.className = 'attention-ring'
+  ring.setAttribute('aria-hidden', 'true')
+  return ring
+}
+
 function buildChip(key) {
   const button = document.createElement('button')
   button.type = 'button'
@@ -669,7 +678,7 @@ function buildChip(key) {
   text.className = 'label'
   const agent = document.createElement('span')
   agent.className = 'agent-label'
-  button.append(dot, agent, text)
+  button.append(attentionRing(), dot, agent, text)
   button.addEventListener('click', () => {
     // Reveal to show THIS card, not a vote to show cards from now on — and not
     // at all when the user has the cards hidden.
@@ -713,6 +722,7 @@ function scheduleDeadlineRender(groups) {
 }
 
 function render() {
+  document.body.classList.toggle('quiet', config.quiet)
   const groups = cardsFor(sessions)
   const byKey = new Map(groups.map((group) => [group.key, group]))
   scheduleDeadlineRender(groups)
@@ -733,28 +743,17 @@ function render() {
 
   for (const group of groups) {
     const view = viewFor(group.key)
-    const urgent = URGENT.has(group.state)
-    // Two edges, because they answer two different questions. The tray blink is
-    // a glance and keeps the old rule: anything urgent, including the idle
-    // notification, is worth a flicker in the corner. Taking a put-away card
-    // back is the corner of the screen, and only a question actually being
-    // asked earns that.
-    //
-    // Tracked separately on purpose. Sharing one `wasUrgent` edge would mean an
-    // idle notification, arriving first, swallowed the edge — and the real
-    // permission prompt that followed it without passing through a quiet state
-    // would never take its card back at all.
+    // A second request is news even if the card never stopped being orange.
+    // Use live request fields so the minimum-display hold cannot swallow it.
     const demands = demandsAttention(group.state, group.session)
-    if (urgent && !view.wasUrgent && group.state === 'waiting') {
-      // The state the whole overlay was built for — an agent waiting on you is
-      // dead time you are paying for twice — and it was the only state that
-      // could not reach you behind a fullscreen window. Done and Failed blink
-      // the tray; the one that is costing money in real time now does too. The
-      // sound stays opt-in.
-      invoke('flash_tray').catch(() => {})
+    const request = attentionKey(group.session)
+    const newRequest = Boolean(request && request !== view.alertedRequest)
+    if (newRequest && !config.quiet) {
+      invoke('flash_tray', { waiting: true }).catch(() => {})
       if (config.alertOnWaiting) invoke('alert').catch(() => {})
     }
-    if (demands && !view.wasDemanding) {
+    view.alertedRequest = request
+    if (demands && (!view.wasDemanding || newRequest)) {
       collapsed.delete(group.key)
       slots = [group.key, ...slots.filter((key) => key !== group.key)]
       // "Anything that starts needing you takes the card back on its own" is a
@@ -773,7 +772,6 @@ function render() {
       // and nothing else.
       if (config.showBubble) setStackHidden(false, { persist: false })
     }
-    view.wasUrgent = urgent
     view.wasDemanding = demands
 
     // Finishing while you were looking at something else is the thing this

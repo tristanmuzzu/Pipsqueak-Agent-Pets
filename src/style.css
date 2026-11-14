@@ -218,6 +218,30 @@ body {
   border-color: rgba(244, 88, 88, 0.5);
 }
 
+/* Pulse the outline, leaving text and pointer targets still. An unanswered
+   request keeps this cue even after the pet's ordinary idle animations park. */
+.attention-ring {
+  display: none;
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  border: 2px solid var(--waiting);
+  box-shadow: 0 0 8px 2px rgba(255, 152, 56, 0.35);
+  pointer-events: none;
+}
+[data-state="waiting"] > .attention-ring {
+  display: block;
+  animation: attention-pulse 2.4s ease-in-out infinite;
+}
+@keyframes attention-pulse {
+  0%, 100% { opacity: 0.15; }
+  50% { opacity: 0.95; }
+}
+body.quiet .attention-ring {
+  animation: none;
+  opacity: 0.25;
+}
+
 .card-head {
   display: flex;
   align-items: center;
@@ -277,6 +301,7 @@ body {
 /* Motion here is decoration on top of colour and text, never the only carrier
    of meaning, so it is safe to switch all of it off. */
 @media (prefers-reduced-motion: reduce) {
+  .attention-ring,
   .card,
   .ask,
   .unread,
@@ -642,6 +667,7 @@ body.settled #pet.asleep {
    the chats live in when the cards are folded away, so a dot alone was too
    small a thing to carry it. */
 .chips button {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 5px;

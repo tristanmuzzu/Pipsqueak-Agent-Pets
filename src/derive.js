@@ -138,6 +138,17 @@ export function blockedOn(session, now = Date.now()) {
   return ''
 }
 
+/** Identify the actual request, not the held display state or routine updates. */
+export function attentionKey(session, now = Date.now()) {
+  if (!blockedOn(session, now)) return ''
+  const ready = (since) => since && now - since >= WAITING_DEBOUNCE_MS
+  return JSON.stringify([
+    ready(session.waiting_since) ? [session.waiting_since, session.waiting_reason || ''] : null,
+    ready(session.pending_since)
+      ? [session.pending_since, session.pending_tool || '', session.pending_detail || ''] : null
+  ])
+}
+
 /**
  * Collapse the three questions a session file answers (what is it doing, how
  * did the last turn end, is a human blocking it) into a single word, in that

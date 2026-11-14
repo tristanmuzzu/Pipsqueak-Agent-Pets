@@ -52,7 +52,10 @@ macOS is untested and login startup is not implemented there.
 
 - **Working:** the agent's own latest narration, plus elapsed time and actions.
 - **Needs you:** a question or approval request. Short automatic approvals are
-  delayed so they do not flash as urgent work.
+  delayed so they do not flash as urgent work. Orange cards and collapsed chips
+  pulse while they need attention. Each new request blinks the tray, even if
+  completion blinks are disabled. Do Not Disturb suppresses alerts and the pulse;
+  reduced motion keeps the orange outline steady.
 - **Done or failed:** a result you can read without finding the terminal.
 - **Several chats:** separate cards, including Claude and Codex in the same repo.
 

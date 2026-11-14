@@ -45,9 +45,9 @@ pub fn clear(app: &AppHandle) {
     }
 }
 
-pub fn flash(app: &AppHandle) {
+pub fn flash(app: &AppHandle, waiting: bool) {
     let config = load_config();
-    if config.quiet || !config.flash_on_finish {
+    if !should_flash(config.quiet, config.flash_on_finish, waiting) {
         return;
     }
     let Some(normal) = normal_icon(app) else {
@@ -77,6 +77,26 @@ pub fn flash(app: &AppHandle) {
             }
         }
     });
+}
+
+fn should_flash(quiet: bool, flash_on_finish: bool, waiting: bool) -> bool {
+    !quiet && (waiting || flash_on_finish)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_flash;
+
+    #[test]
+    fn waiting_alerts_are_independent_of_completion_alerts_but_respect_quiet() {
+        assert!(should_flash(false, false, true));
+        assert!(!should_flash(false, false, false));
+        assert!(should_flash(false, true, false));
+        for waiting in [false, true] {
+            assert!(!should_flash(true, true, waiting));
+            assert!(!should_flash(true, false, waiting));
+        }
+    }
 }
 
 fn normal_icon(app: &AppHandle) -> Option<Image<'static>> {

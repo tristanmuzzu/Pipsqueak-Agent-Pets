@@ -16,7 +16,7 @@ parsed at all is moved to `config.json.bak` rather than overwritten.
 | `show_bubble` | show the status cards; off keeps the pet alone, and is remembered |
 | `show_scratch` | include sessions rooted in a temp directory |
 | `alert_on_waiting` | play a sound when a project starts waiting on you |
-| `flash_on_finish` | blink the tray icon when a project finishes |
+| `flash_on_finish` | blink the tray icon when a project finishes; attention requests blink independently |
 | `quiet` | do not disturb: no sound, no blink, the pet dozes |
 | `hotkey` | chord that shows and hides the pet, or `off` |
 | `update_check` | ask GitHub about new releases (off by default) |
