@@ -26,6 +26,16 @@ Root causes found, in order of contribution:
 
 ## Fixed — backend truthfulness
 
+- **Idle chats read as Working because a mod polled through them (2026-11-16)**
+  `hook.rs` — the Claude desktop app runs plugin and mod tool calls inside every
+  open chat, and they fire Pre/PostToolUse like the agent's own. A side-pane mod
+  calling `ccd_session_mgmt` every ~20s kept seven cards on Working with two real
+  turns, erased their Done, and refreshed `updated_ms` so nothing aged out. The
+  same mods were carried to Windows with the rest of the Claude setup, so the
+  pet broke there too. Host calls carry `tool_use_id` `toolu_plugin_…`; tool
+  events with that id are now ignored. Regression:
+  `a_tool_call_the_host_made_for_a_plugin_is_ignored`.
+
 - **Codex cards disappearing during large appends (2026-10-16)** `codex.rs`
   — every append exceeding the 256 KiB poll budget removed an already visible
   session until replay caught up. That also removed its live-desktop subscription

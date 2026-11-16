@@ -619,8 +619,31 @@ fn live(state: &'static str, kind: &str, activity: String) -> Update {
     }
 }
 
+/// A tool call the host app made on a plugin's behalf, not one the agent chose.
+///
+/// The Claude desktop app lets plugins and mods call tools inside every open
+/// chat, and those calls fire the same Pre/PostToolUse hooks as the agent's
+/// own. A side-pane mod polling `ccd_session_mgmt` every twenty seconds made
+/// every idle chat on the machine read as Working, and wiped the Done its last
+/// turn had earned (measured 2026-11-16, seven cards, two real turns). The
+/// app marks these calls in the id it hands the hook: the agent's are
+/// `toolu_01…`, the host's are `toolu_plugin_…`.
+fn is_host_tool_call(payload: &Value) -> bool {
+    payload
+        .get("tool_use_id")
+        .and_then(Value::as_str)
+        .is_some_and(|id| id.starts_with("toolu_plugin_"))
+}
+
 /// Returns `None` for events the pet ignores.
 fn classify(event: &str, payload: &Value) -> Option<Update> {
+    // Not progress, not a turn, not the agent: the session file must not move
+    // at all, or `updated_ms` alone would keep a dead chat looking alive.
+    if matches!(event, "PreToolUse" | "PostToolUse" | "PostToolUseFailure")
+        && is_host_tool_call(payload)
+    {
+        return None;
+    }
     let text = |key: &str| {
         payload
             .get(key)
@@ -1331,6 +1354,32 @@ mod tests {
         // and counting both would take the same subagent away twice.
         let done = classify("PostToolUse", &json!({ "tool_name": "Task" })).unwrap();
         assert_eq!(done.subagents, 0);
+    }
+
+    /// A mod polling through the desktop app is not the agent working. Payload
+    /// shape copied from a real idle chat, 2026-11-16.
+    #[test]
+    fn a_tool_call_the_host_made_for_a_plugin_is_ignored() {
+        let polled = |event: &str, id: &str| {
+            classify(
+                event,
+                &json!({
+                    "hook_event_name": event,
+                    "tool_name": "mcp__ccd_session_mgmt__list_sessions",
+                    "tool_input": { "limit": 30 },
+                    "tool_use_id": id,
+                    "mcp_server": { "name": "ccd_session_mgmt", "source": "sdk" }
+                }),
+            )
+        };
+        for event in ["PreToolUse", "PostToolUse", "PostToolUseFailure"] {
+            assert!(
+                polled(event, "toolu_plugin_11a034a7c1bc40068faba2f99bec6261").is_none(),
+                "{event} from a plugin must not touch the card"
+            );
+            // The same tool, chosen by the agent, is real work.
+            assert!(polled(event, "toolu_01AGxB4N7Y7NKJxXJJLyxeG8").is_some());
+        }
     }
 
     // --- what one event does to the file ---------------------------------
