@@ -55,7 +55,13 @@ jobs:
               --draft \
               --title "Pipsqueak $TAG" \
               --notes-file "docs/releases/$TAG.md"
-            id=$(find_id)
+            # The list endpoint lags a fresh create by a few seconds; v0.9.1's
+            # first run made the draft and then failed to find it.
+            for _ in 1 2 3 4 5 6; do
+              id=$(find_id)
+              [ -n "$id" ] && break
+              sleep 5
+            done
           fi
           if [ -z "$id" ]; then
             echo "no release for ${TAG} after trying to create one" >&2
