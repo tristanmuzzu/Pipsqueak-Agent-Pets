@@ -565,10 +565,10 @@ fn doctor_report(app: AppHandle) -> String {
     doctor::markdown(&doctor::run(&hotkey_binding(app)))
 }
 
-/// Blink the tray icon: a project finished while you were looking elsewhere.
+/// Blink for a completion or a request that needs the user's attention.
 #[tauri::command]
-fn flash_tray(app: AppHandle) {
-    attention::flash(&app);
+fn flash_tray(app: AppHandle, waiting: Option<bool>) {
+    attention::flash(&app, waiting.unwrap_or(false));
 }
 
 /// The chord that shows and hides the pet, for the menu to display.

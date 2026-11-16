@@ -5,6 +5,7 @@ import {
   DONE_LINGER_MS,
   WAITING_DEBOUNCE_MS,
   blockedOn,
+  attentionKey,
   displayState,
   dismissable,
   petState,
@@ -59,6 +60,20 @@ test('an explicit notification outranks a pending permission', () => {
     pending_detail: 'run: npm install'
   })
   assert.equal(blockedOn(session, NOW), 'Waiting for your reply')
+})
+
+test('attention follows each request even when the card stays orange', () => {
+  const idle = quiet({ outcome: 'done', waiting_since: NOW - 5000, waiting_reason: 'Waiting for your reply' })
+  const first = attentionKey(idle, NOW)
+  assert.ok(first)
+  assert.equal(attentionKey({ ...idle, updated_ms: NOW, narration: 'Another update' }, NOW + 1000), first)
+  const approval = { ...idle, pending_since: NOW, pending_tool: 'Bash', pending_detail: 'run: npm install' }
+  assert.equal(attentionKey(approval, NOW + 200), first, 'short automatic approvals stay quiet')
+  const second = attentionKey(approval, NOW + WAITING_DEBOUNCE_MS)
+  assert.notEqual(second, first, 'approval following an idle reminder alerts')
+  assert.notEqual(attentionKey({ ...approval, pending_since: NOW + 1000 }, NOW + 2000), second, 'a second approval alerts')
+  assert.equal(attentionKey(quiet(), NOW), '', 'resuming clears the request despite a held orange display')
+  assert.equal(attentionKey(quiet({ state: 'running', updated_ms: NOW - 60_000 }), NOW), '', 'silence alone never invents a blocker')
 })
 
 test('an unanswered Codex question needs you while working and after completion', () => {

@@ -13,9 +13,10 @@ lived (`74f7262`, `bb55af0`, `e242576`), and it is what this skill covers.
 The app runs outside Tauri. `src/main.js:24` sets `IS_TAURI` from
 `__TAURI_INTERNALS__`, and the browser path is a supported degradation, so the
 whole UI can be driven in plain Chrome with no desktop, no compositor and no
-window management. Use that. Reach for `wayland-computer-use` only for something
-that genuinely needs the real Tauri window, such as click-through, always-on-top
-or multi-monitor placement.
+window management. Use that for browser-verifiable behavior. Use the currently available native
+computer-use workflow (Deskwright on this workstation) when the behavior needs
+the real Tauri window, such as click-through, always-on-top or multi-monitor
+placement. Choose the desktop surface from the task and current personal guidance.
 
 ## Launch
 
@@ -82,8 +83,8 @@ asserts something is hidden, assert the element's own `hidden`, not its absence.
 
 Evidence produced by this script sits at rung 4 of the `docs/engineering.md`
 ladder: real code ran and would have failed loudly. Rung 5, reproduced in the
-running Tauri window with a real cursor, needs `wayland-computer-use` and is not
-what this script does. Say which rung you got to.
+running Tauri window with a real cursor, needs the available native computer-use
+workflow and is not what this script does. Say which rung you got to.
 
 ## Cleanup
 
