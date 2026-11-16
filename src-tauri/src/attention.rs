@@ -83,22 +83,6 @@ fn should_flash(quiet: bool, flash_on_finish: bool, waiting: bool) -> bool {
     !quiet && (waiting || flash_on_finish)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::should_flash;
-
-    #[test]
-    fn waiting_alerts_are_independent_of_completion_alerts_but_respect_quiet() {
-        assert!(should_flash(false, false, true));
-        assert!(!should_flash(false, false, false));
-        assert!(should_flash(false, true, false));
-        for waiting in [false, true] {
-            assert!(!should_flash(true, true, waiting));
-            assert!(!should_flash(true, false, waiting));
-        }
-    }
-}
-
 fn normal_icon(app: &AppHandle) -> Option<Image<'static>> {
     let base = app.default_window_icon()?;
     Some(Image::new_owned(
@@ -124,4 +108,20 @@ fn alert_icon(app: &AppHandle) -> Option<Image<'static>> {
         pixel[2] = ((pixel[2] as u16 * 2) / 5) as u8;
     }
     Some(Image::new_owned(rgba, base.width(), base.height()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_flash;
+
+    #[test]
+    fn waiting_alerts_are_independent_of_completion_alerts_but_respect_quiet() {
+        assert!(should_flash(false, false, true));
+        assert!(!should_flash(false, false, false));
+        assert!(should_flash(false, true, false));
+        for waiting in [false, true] {
+            assert!(!should_flash(true, true, waiting));
+            assert!(!should_flash(true, false, waiting));
+        }
+    }
 }
